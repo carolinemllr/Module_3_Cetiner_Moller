@@ -227,15 +227,21 @@ ANSWER: It will change the results on the map because we would assume that these
 Stack the three layers into one `grid` (starting from `richness`, so the chunk is safe to re-run), fill the missing values, then use `mask()` with the European polygon (`europe_proj`) to set everything outside to `NA`. Plot `grid` and count the cells that remain with `global(grid[["richness"]], "notNA")`.
 
 *Think:* why mask *after* filling the zeros rather than before? And `mask()` has a `touches` argument: which setting do you want for a coastline?
+ANSWER: fill0() replaces every NA with 0, and it doesn’t distinguish between missing values on land and cells outside Europe. If we masked first, the outside cells would become NA, but the fill would then turn them into 0, a valid value the optimizer could select. Masking after filling makes NA the final value for everything outside the European polygons, so only European land cells can be chosen, while missing carbon or NCP values on land (lakes, glaciers, thin coverage) stay as 0.
+touches = TRUE. By default (FALSE), a cell is kept only if its centre lies inside a polygon, so coastal cells that are partly land and partly sea get dropped, and small islands can disappear entirely. With TRUE, every cell the polygon touches is kept, preserving the coastline and islands. The cost is that a few kept cells are partly sea, but that is the safer error, because dropping real coastal land would hide places a planner might need to protect.
 :::
 
 ```{r}
 #| label: assemble-task
-#| eval: false
+#| # eval: false
 fill0 <- function(x) ifel(is.na(x), 0, x)
 
-grid <- c(richness, ___, ___)
-grid <- mask(grid, ___, touches = ___)
+grid <- c(richness, fill0(carbon), fill0(ncp))
+grid <- mask(grid, europe_proj, touches = TRUE)
+
+plot(grid)
+global(grid[["richness"]], "notNA")
+# Actually the solution is below.
 ```
 
 ::: {.callout-note title="Solution" collapse="true"}
@@ -261,6 +267,10 @@ Each layer keeps its own units and legend.
 
 ::: {.callout-note title="Exercise"}
 Before running anything: if you had to pick 30% of Europe, where would you protect? Write down a guess for each layer, then compare with the optimizer below.
+ANSWER: 
+For Richness: the top 30% would sit in south-eastern and central Europe, the Balkans, the area around the Black Sea, the Alps, and the band from eastern France through Germany to Poland. Scandinavia, Iceland, and the far north would be left out, since richness is lowest there.
+Carbon: almost the opposite of richness. The highest values are in the north: Finland, northern Sweden and Norway, Scotland and Ireland (likely peatlands), plus mountain ranges such as the Alps and Carpathians and the forests of the Baltic region. Iberia and most of the Mediterranean are low.
+NCP: concentrated in the British Isles, Benelux, northern France, western and central Germany, and the Po valley in northern Italy. These are densely populated areas, which fits if the NCP layer counts how many people benefit from nature, not how much nature there is. Scandinavia and much of eastern Europe are low.
 :::
 
 ::: {.callout-tip title="Stuck or offline?"}
@@ -311,9 +321,13 @@ budget_cells <- 0.3 * global(uniform_cost, "sum", na.rm = TRUE)[[1]]
 # highest is 1 (see the note above for why).
 carbon_01 <- stretch(grid[["carbon"]], minv = 0, maxv = 1)
 
+# For some reason, it wasn't working below, so I installed this package with this command run in the console: install.packages("highs")
+
 # THE PROBLEM (nothing is solved yet; this only describes it)
 p_carbon <- problem(uniform_cost, features = carbon_01) |>      # cells to choose from + what to protect
-  add_max_wtd_sum_objective(budget = budget_cells) |>   # maximise the summed feature value, within the budget
+  # add_max_wtd_sum_objective(budget = budget_cells) |> #THIS LINE OF CODE WASN'T WORKING!
+  add_max_utility_objective(budget = budget_cells) |>
+  # maximise the summed feature value, within the budget
   add_binary_decisions() |>                             # each cell is protected (1) or not (0), never partly
   add_default_solver(gap = 0, verbose = FALSE)          # gap = 0: demand the exact best answer, not "within 10%"
 
@@ -326,6 +340,19 @@ plot(sol_carbon, col = c("grey90", "darkgreen"), main = "Carbon alone, 30% of th
 ```
 
 Two things to check. How many cells did it protect (`global(sol_carbon, "sum", na.rm = TRUE)`), and is that 30% of the land cells? Then look at the map: does it match where the carbon layer is high?
+ANSWER: Yes, it closely matches the carbon layer. The selected cells are where your carbon map was lightest: The north: most of Finland and large parts of Sweden and Norway, the boreal forests and peatlands. Peatlands in the British Isles: Scotland and Ireland. Mountain ranges: the Alps, the Carpathian arc (the green curve through Slovakia and Romania), the Pyrenees, the Dinaric Alps, and the Balkan mountains.
+Central European forest belts: parts of Germany, Czechia, Poland, and the Baltic states.
+What it leaves out also matches: almost all of Iberia, western France, Iceland, the Mediterranean lowlands, and the plains of eastern Europe and Ukraine, which are low-carbon farmland and dry areas.
+This agrees with the carbon guess from earlier. With equal cost per cell and one feature, the optimizer simply takes the 30% of cells with the highest carbon, so the map is essentially “the top 30% of the carbon layer”.
+One thing worth noting: the selection is patchy, with many isolated cells, especially in central Europe. That’s because nothing in the problem rewards connected areas. Real protected-area planning usually adds a penalty for fragmentation, since scattered single cells are hard to manage as reserves.
+In total we have 17457.6 cells protected which corresponds to 0.2999897 thus almost 30% of land.
+
+```{r}
+global(sol_carbon, "sum", na.rm = TRUE)   # cells protected
+budget_cells                              # 30% of the land cells
+
+global(sol_carbon, "sum", na.rm = TRUE)[[1]] / global(uniform_cost, "sum", na.rm = TRUE)[[1]]
+```
 
 ## richness and carbon
 
